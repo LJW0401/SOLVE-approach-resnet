@@ -14,35 +14,48 @@ import time
 
 # ============ Configuration ============
 CONFIG = {
-    "approach": "ResNet18 Transfer Learning",
-    "iteration": 1,
-    "batch_size": 128,
-    "epochs": 20,
-    "learning_rate": 0.001,
+    "approach": "ResNet18 Transfer Learning v2",
+    "iteration": 2,
+    "batch_size": 64,
+    "epochs": 30,
+    "learning_rate": 0.0005,
+    "weight_decay": 5e-4,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
+    "changes": "96x96 input, stronger augmentation, weight decay, freeze early layers, dropout",
 }
 
 
 # ============ Model ============
-def create_resnet18(num_classes=10):
+def create_resnet18(num_classes=10, freeze_layers=True):
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
     # Modify first conv layer for 1-channel grayscale input
     model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-    # Modify classifier
-    model.fc = nn.Linear(model.fc.in_features, num_classes)
+    # Freeze early layers to prevent overfitting
+    if freeze_layers:
+        for name, param in model.named_parameters():
+            if "layer1" in name or "bn1" in name:
+                param.requires_grad = False
+    # Modify classifier with dropout
+    model.fc = nn.Sequential(
+        nn.Dropout(0.3),
+        nn.Linear(512, num_classes),
+    )
     return model
 
 
 # ============ Data ============
 def get_data_loaders(batch_size):
     transform_train = transforms.Compose([
-        transforms.Resize(224),
+        transforms.Resize(96),
         transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
         transforms.ToTensor(),
         transforms.Normalize((0.2860,), (0.3530,)),
+        transforms.RandomErasing(p=0.2),
     ])
     transform_test = transforms.Compose([
-        transforms.Resize(224),
+        transforms.Resize(96),
         transforms.ToTensor(),
         transforms.Normalize((0.2860,), (0.3530,)),
     ])
@@ -97,7 +110,7 @@ def main():
 
     model = create_resnet18().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=CONFIG["learning_rate"])
+    optimizer = optim.AdamW(model.parameters(), lr=CONFIG["learning_rate"], weight_decay=CONFIG["weight_decay"])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CONFIG["epochs"])
 
     param_count = sum(p.numel() for p in model.parameters())
