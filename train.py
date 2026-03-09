@@ -14,33 +14,33 @@ import time
 
 # ============ Configuration ============
 CONFIG = {
-    "approach": "ResNet18 Transfer Learning v2",
-    "iteration": 2,
+    "approach": "ResNet18 Transfer Learning v3",
+    "iteration": 3,
     "batch_size": 64,
-    "epochs": 30,
-    "learning_rate": 0.0005,
-    "weight_decay": 5e-4,
+    "epochs": 40,
+    "learning_rate": 0.0003,
+    "weight_decay": 1e-3,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "changes": "96x96 input, stronger augmentation, weight decay, freeze early layers, dropout",
+    "changes": "Unfreeze all layers, heavier dropout(0.5), mixup augmentation, longer training",
 }
 
 
 # ============ Model ============
-def create_resnet18(num_classes=10, freeze_layers=True):
+def create_resnet18(num_classes=10):
     model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-    # Modify first conv layer for 1-channel grayscale input
     model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-    # Freeze early layers to prevent overfitting
-    if freeze_layers:
-        for name, param in model.named_parameters():
-            if "layer1" in name or "bn1" in name:
-                param.requires_grad = False
-    # Modify classifier with dropout
     model.fc = nn.Sequential(
-        nn.Dropout(0.3),
+        nn.Dropout(0.5),
         nn.Linear(512, num_classes),
     )
     return model
+
+
+def mixup_data(x, y, alpha=0.2):
+    lam = torch.distributions.Beta(alpha, alpha).sample().item() if alpha > 0 else 1.0
+    idx = torch.randperm(x.size(0), device=x.device)
+    mixed_x = lam * x + (1 - lam) * x[idx]
+    return mixed_x, y, y[idx], lam
 
 
 # ============ Data ============
@@ -70,18 +70,24 @@ def get_data_loaders(batch_size):
 
 
 # ============ Training ============
-def train_one_epoch(model, loader, criterion, optimizer, device):
+def train_one_epoch(model, loader, criterion, optimizer, device, use_mixup=True):
     model.train()
     total_loss, correct, total = 0, 0, 0
     for images, labels in loader:
         images, labels = images.to(device), labels.to(device)
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
+        if use_mixup:
+            mixed_images, targets_a, targets_b, lam = mixup_data(images, labels)
+            outputs = model(mixed_images)
+            loss = lam * criterion(outputs, targets_a) + (1 - lam) * criterion(outputs, targets_b)
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
         total_loss += loss.item() * images.size(0)
-        correct += (outputs.argmax(1) == labels).sum().item()
+        outputs_clean = model(images) if use_mixup else outputs
+        correct += (outputs_clean.argmax(1) == labels).sum().item()
         total += labels.size(0)
     return total_loss / total, correct / total
 
